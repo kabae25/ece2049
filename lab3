@@ -1,0 +1,415 @@
+#include <msp430.h>
+#include <stdlib.h>
+#include "peripherals.h"
+
+void configureButtons(void);
+unsigned char getButtonState(void);
+void configureUserLED(unsigned char inbits);
+void swDelay(unsigned char numLoops);
+void enableBuzzer(unsigned int pwm);
+void runtimerA2(void);
+void stoptimerA2(bool reset);
+void displayTime(unsigned int inTme);
+void readTempToBuffer(void);
+float getTemperature(unsigned int);
+void scrollWheel(void);
+void convert_seconds(long total_seconds);
+
+unsigned long long timer_cnt=0;
+char tdir = 1;
+bool update = true;
+
+enum TempUnits {Far, Cel};
+unsigned int USER_TEMP_SELECTION = Far;
+
+unsigned int pot_value;
+
+// List of Possible States
+enum States {DISPLAY, EDIT};
+unsigned int state = DISPLAY;
+
+unsigned int seconds;
+unsigned int minutes;
+unsigned int hours;
+unsigned int days;
+
+// List of months
+enum Months {JAN, FEB, MAR, APR, MAY, JUN, JUL, AUG, SEP, OCT, NOV, DEC};
+unsigned int currentMonth = JAN;
+
+/**
+ * For the temperature adc stuff
+ */
+
+// Temperature Sensor Calibration = Reading at 30 degrees C is stored at addr 1A1Ah
+// See end of datasheet for TLV table memory mapping
+#define CALADC12_15V_30C  *((unsigned int *)0x1A1A)
+// Temperature Sensor Calibration = Reading at 85 degrees C is stored at addr 1A1Ch                                            //See device datasheet for TLV table memory mapping
+#define CALADC12_15V_85C  *((unsigned int *)0x1A1C)
+unsigned int in_temp;
+
+float tempArray[30] = {0}; // set the temp array to 0 to begin
+unsigned int tempArrayBuffer = 0; // set the temp counter for the ADC
+
+volatile float degC_per_bit;
+volatile float temperatureDegC;
+volatile float temperatureDegF;
+volatile unsigned int bits30, bits85;
+
+volatile unsigned int i;
+/**
+ * main.c
+ */
+int main(void) {
+    WDTCTL = WDTPW | WDTHOLD;// stop watchdog timer
+
+    /** 
+     * Init the ADC
+     */
+    REFCTL0 &= ~REFMSTR;    // Reset REFMSTR to hand over control of
+    ADC12CTL0 = ADC12SHT0_9 | ADC12REFON | ADC12ON;     // Internal ref = 1.5V
+    ADC12CTL1 = ADC12SHP;                     // Enable sample timer
+
+        // Using ADC12MEM0 to store reading
+    ADC12MCTL0 = ADC12SREF_1 + ADC12INCH_10;  // ADC i/p ch A10 = temp sense
+    	                                    // ACD12SREF_1 = internal ref = 1.5v
+  
+    __delay_cycles(100);                    // delay to allow Ref to settle
+    ADC12CTL0 |= ADC12ENC;           	  // Enable conversion
+  
+    // Use calibration data stored in info memory
+    bits30 = CALADC12_15V_30C;
+    bits85 = CALADC12_15V_85C;
+    degC_per_bit = ((float)(85.0 - 30.0))/((float)(bits85-bits30));
+
+    /**
+     * Init the rest
+     */
+    _BIS_SR(GIE);//enables interupts
+    runtimerA2();//starts timer
+   
+    configureButtons();
+    configDisplay();
+    configKeypad();
+    initLeds();
+
+
+    volatile float temperatureDegC;
+    volatile float temperatureDegF;
+    volatile float degC_per_bit;
+    volatile unsigned int bits30, bits85;
+
+    char state = DISPLAY;
+    Graphics_clearDisplay(&g_sContext); // Clear the display
+
+    /**
+     * Main Program Loop
+     */
+    while (1) {
+
+        ADC12CTL0 &= ~ADC12SC; 	// clear the start bit
+        ADC12CTL0 |= ADC12SC;       // Sampling and conversion start
+    			        // Single conversion (single channel)
+        
+        // chill out whie the ADC is reading
+        while (ADC12CTL1 & ADC12BUSY){ // while the ADC is reading
+        __no_operation();
+        }
+
+
+        // State Machine
+        switch (state) {
+            case(DISPLAY):
+                if(update){//this will run every 1 second
+
+                    char tempStr[10]= {'\0'};  // Array to hold the string representation of the temperature
+
+                    // display the Current Time, and Temp
+                    readTempToBuffer(); // add the temp to the circular buffer
+                    float temperature = getTemperature(USER_TEMP_SELECTION);
+                    sprintf(tempStr, "%f.2", temperature);
+
+                    // conversions from running time to time
+                    convert_seconds(timer_cnt);
+                    char displayStr[8];
+                    displayStr[0] = (hours/10) + 0x30;
+                    displayStr[1] = (hours%10) + 0x30;
+                    displayStr[2] = ':';
+                    displayStr[3] = (minutes/10) + 0x30;
+                    displayStr[4] = (minutes%10) + 0x30;
+                    displayStr[5] = ':';
+                    displayStr[6] = (seconds/10) + 0x30;
+                    displayStr[7] = (seconds%10) + 0x30;
+                    displayStr[8] = '\0';
+                    
+                    
+                    char potStr[10];  // Array to hold the string representation
+                   
+                    
+                    
+                    //scrollWheel();
+                    //sprintf(potStr, "%d", pot_value);
+
+                    Graphics_clearDisplay(&g_sContext); // Clear the display
+                    
+                    Graphics_drawStringCentered(&g_sContext, "THE TEMPERATURE", AUTO_STRING_LENGTH, 48, 18, TRANSPARENT_TEXT);
+                    Graphics_drawStringCentered(&g_sContext, tempStr, AUTO_STRING_LENGTH, 48, 28, TRANSPARENT_TEXT); 
+
+                    // 
+                    Graphics_drawStringCentered(&g_sContext, "THE DATE & TIME", AUTO_STRING_LENGTH, 48, 48, TRANSPARENT_TEXT);
+                    Graphics_drawStringCentered(&g_sContext, daysStr          , AUTO_STRING_LENGTH, 48, 58, TRANSPARENT_TEXT); 
+
+                    Graphics_drawStringCentered(&g_sContext, displayStr          , AUTO_STRING_LENGTH, 48, 68, TRANSPARENT_TEXT); 
+
+                    // Graphics_drawStringCentered(&g_sContext, hourStr          , AUTO_STRING_LENGTH, 28, 68, TRANSPARENT_TEXT); 
+                    // Graphics_drawStringCentered(&g_sContext, ":"              , AUTO_STRING_LENGTH, 38, 68, TRANSPARENT_TEXT); 
+                    // Graphics_drawStringCentered(&g_sContext, minsStr          , AUTO_STRING_LENGTH, 48, 68, TRANSPARENT_TEXT); 
+                    // Graphics_drawStringCentered(&g_sContext, ":"              , AUTO_STRING_LENGTH, 58, 68, TRANSPARENT_TEXT); 
+                    // Graphics_drawStringCentered(&g_sContext, secsStr          , AUTO_STRING_LENGTH, 68, 68, TRANSPARENT_TEXT); 
+
+                    // allegedly displays the pot value. idfk. i hate it here
+                    //Graphics_drawStringCentered(&g_sContext, "POTVAL", AUTO_STRING_LENGTH, 8, 28, TRANSPARENT_TEXT);
+                    //Graphics_drawStringCentered(&g_sContext, potStr, AUTO_STRING_LENGTH, 8, 38, TRANSPARENT_TEXT);
+                    
+                    Graphics_flushBuffer(&g_sContext);
+                    update = false;
+                }
+                //otherwise do nothing
+
+                break;
+
+            case(EDIT):
+                
+                // Allow the user to change the month/day/minute/second offsets
+                // allow the user to change which temperature unit is displayed
+
+                
+                break;
+        }
+    }//end while 1
+}//end main
+
+/**
+ * Add the reading of the ADC to the circular buffer
+ */
+void readTempToBuffer(void) {
+    in_temp = ADC12MEM0;      // Read in results of conversion
+        
+     // if the position in the circular buffer is greater than 29, reset to 0.
+    if (tempArrayBuffer > 29) {
+         tempArrayBuffer = 0;
+    }
+    // convert to degrees C for storage
+    tempArray[tempArrayBuffer] = (float)((long)in_temp - CALADC12_15V_30C) * degC_per_bit +30.0; // set the position in the array 
+    tempArrayBuffer++; // incremenet the tempArrayBuffer
+}
+
+/**
+ * Get the average temp from the circular buffer
+ * Inputs: Units of temperature to return
+ */
+float getTemperature(unsigned int tempin) {
+    unsigned int count = 0;
+    
+    // go through the list of temps and take the average
+    float avg_temp = 0;
+    for (i = 0; i < 29; i++) {
+        float sample = tempArray[i];
+        if (sample) {
+            avg_temp += sample;
+            count++;
+        }
+    }
+    avg_temp = avg_temp / count; // take the average, count will change depending on the size of the temp array
+
+    if (tempin == C) { // calculate temp as celcius
+        return avg_temp;
+    }
+    else { // calculate temp as farenheit
+        avg_temp = avg_temp * 9.0/5.0 + 32.0;
+        return avg_temp;
+    }
+}
+
+void convert_seconds(long total_seconds) {
+    // Calculate number of days
+    days = total_seconds / (24 * 3600);
+    total_seconds %= (24 * 3600);
+
+    // Calculate number of hours
+    hours = total_seconds / 3600;
+    total_seconds %= 3600;
+
+    // Calculate number of minutes
+    minutes = total_seconds / 60;
+
+    // Remaining seconds
+    seconds = total_seconds % 60;
+}
+
+// prelab 2
+void configureButtons(void) {
+    // Configure DI/O
+    P7SEL &= ~(BIT0); // S1: 7.0
+    P3SEL &= ~(BIT6); // S2: 3.6
+    P2SEL &= ~(BIT2); // S3: 2.2
+    P7SEL &= ~(BIT4); // S4: 7.4
+
+    // Set direction to input
+    P7DIR |= (BIT0|BIT4);
+    P3DIR |= (BIT6);
+    P2DIR |= (BIT2);
+
+    // Enable pull resistors
+    P7REN |= (BIT0|BIT4);
+    P3REN |= (BIT6);
+    P2REN |= (BIT2);
+
+    // Configure to pull up
+    P7OUT |= (BIT0|BIT4);
+    P3OUT |= (BIT6);
+    P2OUT |= (BIT2);
+}
+
+void scrollWheel(void){
+
+ // Configure P8.0 as digital IO output and set it to 1
+  // This supplied 3.3 volts across scroll wheel potentiometer
+  // See schematic at end or MSP-EXP430F5529 board users guide 
+  P6SEL &= ~BIT0;
+  P6DIR |= BIT0;
+  P6OUT |= BIT0;
+
+  REFCTL0 &= ~REFMSTR;                      // Reset REFMSTR to hand over control of
+                                            // internal reference voltages to
+  	  	  	  	  	    // ADC12_A control registers
+  ADC12CTL0 = ADC12SHT0_9 | ADC12ON;
+                                            
+  ADC12CTL1 = ADC12SHP;                     // Enable sample timer
+  	                                    
+  // Use ADC12MEM0 register for conversion results     
+  ADC12MCTL0 = ADC12SREF_0 + ADC12INCH_5;   // ADC12INCH5 = Scroll wheel = A5
+  	  	  	  	  	    // ACD12SREF_0 = Vref+ = Vcc
+
+  __delay_cycles(100);                      // delay to allow Ref to settle
+  ADC12CTL0 |= ADC12ENC;		    // Enable conversion
+
+  while(1) {
+    ADC12CTL0 &= ~ADC12SC; 		// clear the start bit
+    ADC12CTL0 |= ADC12SC;               // Sampling and conversion start
+    					// Single conversion (single channel)
+
+    // Poll busy bit waiting for conversion to complete
+    while (ADC12CTL1 & ADC12BUSY)
+    	__no_operation();
+
+    pot_value = ADC12MEM0;               // Read results if conversion done
+
+                
+  }
+}
+
+// prelab 3
+unsigned char getButtonState(void) {
+    unsigned char retVal = 0; // make empty
+    retVal |= (P7IN &= (BIT0)); // get button S1
+    retVal |= (P3IN &= (BIT6))>>5; // get button S2
+    retVal |= (P2IN &= (BIT2)); // get button S3
+    retVal |= (P7IN &= (BIT4))>>1; // get button S4
+    return ~retVal & 0x0F;
+}
+
+//prelab 5
+void configureUserLED(unsigned char inbits) {
+    // Clear the LEDs
+    P1OUT &= ~(BIT0);
+    P4OUT &= ~(BIT7);
+
+    // if there is a change, turn on the LED
+    if (inbits & BIT0)
+        P1OUT |= BIT0;   // LED1 P1.0
+    if (inbits & BIT1)
+        P4OUT |= BIT7;   // LED P2 P4.7
+}
+
+void swDelay(unsigned char numLoops) {
+    volatile unsigned int i,j;  // volatile to prevent removal in optimization
+                                // by compiler. Functionally this is useless code
+    for (j=0; j<numLoops; j++) {
+        i = 500;                    // SW Delay
+        while (i > 0){               // could also have used while (i)
+           i--;
+        }
+    }
+}
+
+void timerDelay(long unsigned int ms) {
+    long unsigned int base = timer_cnt;
+    while((timer_cnt - base) < ms){
+        __no_operation();
+    }
+}
+
+void enableBuzzer(unsigned int pwm){
+    // Initialize PWM output on P3.5, which corresponds to TB0.5
+    P3SEL |= BIT5; // Select peripheral output mode for P3.5
+    P3DIR |= BIT5;
+
+    TB0CTL  = (TBSSEL__ACLK|ID__1|MC__UP);  // Configure Timer B0 to use ACLK, divide by 1, up mode
+    TB0CTL  &= ~TBIE;                       // Explicitly Disable timer interrupts for safety
+
+    // Now configure the timer period, which controls the PWM period
+    // Doing this with a hard coded values is NOT the best method
+    // We do it here only as an example. You will fix this in Lab 2.
+    TB0CCR0   = pwm;                    // Set the PWM period in ACLK ticks
+    TB0CCTL0 &= ~CCIE;                  // Disable timer interrupts
+
+    // Configure CC register 5, which is connected to our PWM pin TB0.5
+    TB0CCTL5  = OUTMOD_7;                   // Set/reset mode for PWM
+    TB0CCTL5 &= ~CCIE;                      // Disable capture/compare interrupts
+    TB0CCR5   = TB0CCR0/2;                  // Configure a 50% duty cycle
+}
+
+//TIMER SETUP
+
+void runtimerA2(void) {
+    TA2CTL = TASSEL_1 + MC_1 + ID_0;
+    TA2CCR0 = 32768;//interupt every 1 second
+    TA2CCTL0 = CCIE;
+}
+
+void stoptimerA2(bool reset){
+    TA2CTL = MC_0;
+    TA2CCTL0 &= ~CCIE;
+    if(reset){
+        timer_cnt=0;
+    }
+}
+
+// void displayTime(unsigned int inTme) {
+//     char asc_arr[6];
+//     unsigned int min;
+//     unsigned int sec;
+//     unsigned int msec;
+
+//     Graphics_drawStringCentered(&g_sContext, asc_arr, 6,51,32,OPAUE_TEXT);
+// }
+
+#pragma vector = TIMER2_A0_VECTOR//timer count increses by 1 every ms
+__interrupt void TimerA2_ISR (void) {
+    update = true;
+    if (tdir){
+        timer_cnt++;
+        
+        if (timer_cnt == 31536000){
+            timer_cnt = 0;
+        }
+        if (timer_cnt%100==0) { //Blinks LEDs once a second
+            P1OUT = P1OUT ^ BIT0;
+            P4OUT ^= BIT7;
+        }
+    }
+    else{
+        timer_cnt--;
+    }
+}
