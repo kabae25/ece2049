@@ -13,11 +13,12 @@ unsigned char getButtonState(void);
 void swDelay(unsigned char numLoops);
 void runtimerA2(void);
 void stoptimerA2(bool reset);
-void convert_seconds(long total_seconds);
+void convert_seconds(unsigned long long total_seconds);
 float configAdcRegs(void);
 float get_temp(float degC_per_bit);
 float average_arr(float* array, int length);
 int isButtonPressed(volatile char *button_reg, char button_mask);
+void dispTime(unsigned long long time);
 
 unsigned long long timer_cnt=0;
 char tdir = 1;
@@ -85,26 +86,9 @@ void scrollInitialize(){
     P6SEL |= BIT0; // Input channel A0
     P6SEL |= BIT1; // Input channel A1
 
-    REFCTL0 &= ~REFMSTR;                      // Reset REFMSTR to hand over control of
-                                            // internal reference voltages to
-                                   // ADC12_A control registers
-    ADC12CTL0 = ADC12SHT0_9 | ADC12ON;
-
-    ADC12CTL1 = ADC12SHP;                     // Enable sample timer
-
-                                                 // Use ADC12MEM0 register for conversion results
-    ADC12MCTL0 = ADC12SREF_0 + ADC12INCH_0;   // ADC12INCH5 = Scroll wheel = A5
-                        // ACD12SREF_0 = Vref+ = Vcc
-
-    __delay_cycles(100);                      // delay to allow Ref to settle
-    ADC12CTL0 |= ADC12ENC;          // Enable conversion
-
 }
 
 int scrollMain(){
-
-    ADC12CTL1 = ADC12CSTARTADD_1 | ADC12SHP;
-
     ADC12CTL0 &= ~ADC12SC;      // clear the start bit
     ADC12CTL0 |= ADC12SC;               // Sampling and conversion start
                         // Single conversion (single channel)
@@ -112,8 +96,13 @@ int scrollMain(){
         __no_operation();
     }
 
-    pot_value = ADC12MEM1;
+    return ADC12MEM1 & 0x0FFF;
 }
+
+char state = DISPLAY;
+int tempC;
+int tempF;
+
 int main(void) {
 
     WDTCTL = WDTPW | WDTHOLD;// stop watchdog timer
@@ -133,11 +122,11 @@ int main(void) {
     configKeypad();
     initLeds();
 
-    char state = DISPLAY;
 
     int index = 0;//for temperature
     bool arrayFilled; //for temp
-
+    
+    
     Graphics_clearDisplay(&g_sContext); // Clear the display
     displayMonthStr[0] = 'J';
     displayMonthStr[1] = 'A';
@@ -148,9 +137,12 @@ int main(void) {
      */
     while (1) {
         // State Machine
+        
+
         switch (state) {
             case(DISPLAY):
                 if(update){//this will run every 1 second
+                    // conversions from running time to time
                     float temp = get_temp(degperbit);
                     temp_arr[index] = temp;
                     if(arrayFilled){
@@ -159,10 +151,9 @@ int main(void) {
                     else{
                         temp_avg = average_arr(temp_arr, index);
                     }
-                    int tempC = (int)(temp_avg); // Convert to tenths of a degree
-                    int tempF = (int)((temp_avg * 9.0 / 5.0 + 32.0));
-
-
+                    tempC = (int)(temp_avg); // Convert to tenths of a degree
+                    tempF = (int)((temp_avg * 9.0 / 5.0 + 32.0));
+            
                     //update index for temp_arr
                     if (index == 29){
                         index = 0;
@@ -172,147 +163,116 @@ int main(void) {
                         index++;
                     }
 
-                    char tempStrF[3];  // Array to hold the string representation of the temperature
-                    tempStrF[0] = (((int)tempF)/10) + 0x30;
-                    tempStrF[1] = (((int)tempF)%10) + 0x30;
-                    tempStrF[2] = '\0';
-
-                    char tempStrC[3];  // Array to hold the string representation of the temperature
-                    tempStrC[0] = (((int)tempC)/10) + 0x30;
-                    tempStrC[1] = (((int)tempC)%10) + 0x30;
-                    tempStrC[2] = '\0';
-
-
-                    // conversions from running time to time
-                    convert_seconds(timer_cnt + monthOffset + dayOffset + hourOffset + minuteOffset + secondOffset);
-
-                    char displayDayStr[3];
-                    displayDayStr[0] = (days/10) + 0x30;
-                    displayDayStr[1] = (days%10) + 0x30;
-                    displayDayStr[2] = '\0';
-
-                    char displayTimeStr[9];
-                    displayTimeStr[0] = (hours/10) + 0x30;
-                    displayTimeStr[1] = (hours%10) + 0x30;
-                    displayTimeStr[2] = ':';
-                    displayTimeStr[3] = (minutes/10) + 0x30;
-                    displayTimeStr[4] = (minutes%10) + 0x30;
-                    displayTimeStr[5] = ':';
-                    displayTimeStr[6] = (seconds/10) + 0x30;
-                    displayTimeStr[7] = (seconds%10) + 0x30;
-                    displayTimeStr[8] = '\0';
-
-
-                    char potStr[10];  // Array to hold the string representation
-
-
-
-                    Graphics_clearDisplay(&g_sContext); // Clear the display
-
-                    Graphics_drawStringCentered(&g_sContext, "THE TEMPERATURE", AUTO_STRING_LENGTH, 48, 18, TRANSPARENT_TEXT);
-                    Graphics_drawStringCentered(&g_sContext, tempStrF, AUTO_STRING_LENGTH, 14, 28, TRANSPARENT_TEXT);
-                    Graphics_drawStringCentered(&g_sContext, "F", AUTO_STRING_LENGTH, 24, 28, TRANSPARENT_TEXT);
-                    Graphics_drawStringCentered(&g_sContext, tempStrC, AUTO_STRING_LENGTH, 54, 28, TRANSPARENT_TEXT);
-                    Graphics_drawStringCentered(&g_sContext, "C", AUTO_STRING_LENGTH, 64, 28, TRANSPARENT_TEXT);
-
-                    //
-                    Graphics_drawStringCentered(&g_sContext, "THE DATE & TIME", AUTO_STRING_LENGTH, 48, 48, TRANSPARENT_TEXT);
-                    Graphics_drawStringCentered(&g_sContext, displayMonthStr          , AUTO_STRING_LENGTH, 36, 58, TRANSPARENT_TEXT);
-                    Graphics_drawStringCentered(&g_sContext, displayDayStr          , AUTO_STRING_LENGTH, 56, 58, TRANSPARENT_TEXT);
-                    Graphics_drawStringCentered(&g_sContext, displayTimeStr          , AUTO_STRING_LENGTH, 48, 68, TRANSPARENT_TEXT);
-                    Graphics_flushBuffer(&g_sContext);
+                    dispTime(timer_cnt);
                     update = false;
-
-
                 }
-                //otherwise do nothing
-
                 break;
 
             case(EDIT):
                 if (update) {
-                    scrollMain();
+
+
+                    unsigned long long newTime;
+                    
+                    pot_value = scrollMain();
                     Graphics_clearDisplay(&g_sContext); // Clear the display
-                    //int pot_month = (pot_value * 11) / 1023 + 1;
-                    int pot_month = pot_value % (4096 / 11);
-                    //int pot_day = (pot_value * 30) / 1023 + 1;
-                    int pot_day = pot_value % (4096 / 30);
-                    int pot_hour = pot_value % (4096 / 23);
-                    //int pot_hour = (pot_value * 23) / 1023 + 1;
-                    int pot_minute = pot_value %  (4096 + 59);
-                    //int pot_second = (pot_value * 59) / 1023 + 1;
-                    int pot_second = pot_value % (4096 / 59);
-                    char displayDayStr[3];
-                    displayDayStr[0] = (pot_month/10) + 0x30;
-                    displayDayStr[1] = (pot_month%10) + 0x30;
-                    displayDayStr[2] = '\0';
-                    char displayTimeStr[9];
-                    displayTimeStr[0] = (pot_day/10) + 0x30;
-                    displayTimeStr[1] = (pot_day%10) + 0x30;
-                    displayTimeStr[2] = ':';
-                    displayTimeStr[3] = (pot_hour/10) + 0x30;
-                    displayTimeStr[4] = (pot_hour%10) + 0x30;
-                    displayTimeStr[5] = ':';
-                    displayTimeStr[6] = (pot_minute/10) + 0x30;
-                    displayTimeStr[7] = (pot_minute%10) + 0x30;
-                    displayTimeStr[8] = '\0';
-                    Graphics_clearDisplay(&g_sContext); // Clear the display
-                    //
-                    Graphics_drawStringCentered(&g_sContext, "Month Day Time", AUTO_STRING_LENGTH, 48, 48, TRANSPARENT_TEXT);
-                    Graphics_drawStringCentered(&g_sContext, displayMonthStr          , AUTO_STRING_LENGTH, 36, 58, TRANSPARENT_TEXT);
-                    Graphics_drawStringCentered(&g_sContext, displayDayStr          , AUTO_STRING_LENGTH, 56, 58, TRANSPARENT_TEXT);
-                    Graphics_drawStringCentered(&g_sContext, displayTimeStr          , AUTO_STRING_LENGTH, 48, 68, TRANSPARENT_TEXT);
-                    Graphics_flushBuffer(&g_sContext);
-                    update = false;
+
+
+                    newTime = monthOffset + dayOffset + hourOffset + minuteOffset + secondOffset;
+                    dispTime(newTime);
+
                     switch (menu) {
                         case 1: // the month
-                            Graphics_drawStringCentered(&g_sContext, "Edit: Month", AUTO_STRING_LENGTH, 48, 18, TRANSPARENT_TEXT);
-                            monthOffset = pot_month * SECONDS_YEAR; break;
+                            Graphics_drawStringCentered(&g_sContext, "Edit: Month", AUTO_STRING_LENGTH, 48, 8, TRANSPARENT_TEXT);
+                            int pot_month = pot_value / 342;
+                            monthOffset = pot_month * SECONDS_MONTH; break;
+
+
                         case 2: // the day
-                            Graphics_drawStringCentered(&g_sContext, "Edit: Day", AUTO_STRING_LENGTH, 48, 18, TRANSPARENT_TEXT);
+                            Graphics_drawStringCentered(&g_sContext, "Edit: Day", AUTO_STRING_LENGTH, 48, 8, TRANSPARENT_TEXT);
+                            int pot_day = pot_value / 136; 
                             dayOffset = pot_day * SECONDS_DAY; break;
+
                         case 3: // the hour
-                            Graphics_drawStringCentered(&g_sContext, "Edit: Hour", AUTO_STRING_LENGTH, 48, 18, TRANSPARENT_TEXT);
+                            Graphics_drawStringCentered(&g_sContext, "Edit: Hour", AUTO_STRING_LENGTH, 48, 8, TRANSPARENT_TEXT);
+                            int pot_hour = pot_value / 69; 
                             hourOffset = pot_hour * SECONDS_HOUR; break;
+
+
                         case 4: // the minute
-                            Graphics_drawStringCentered(&g_sContext, "Edit: Minute", AUTO_STRING_LENGTH, 48, 18, TRANSPARENT_TEXT);
+                            Graphics_drawStringCentered(&g_sContext, "Edit: Minute", AUTO_STRING_LENGTH, 48, 8, TRANSPARENT_TEXT);
+                            int pot_minute = pot_value / 69; 
                             minuteOffset = pot_minute * SECONDS_MINUTE; break;
-                        case 5:
-                            Graphics_drawStringCentered(&g_sContext, "Edit: Second", AUTO_STRING_LENGTH, 48, 18, TRANSPARENT_TEXT);
+
+
+                        case 5: // the second
+                            Graphics_drawStringCentered(&g_sContext, "Edit: Second", AUTO_STRING_LENGTH, 48, 8, TRANSPARENT_TEXT);
+                            int pot_second = pot_value / 69; 
                             secondOffset = pot_second; break;
+
                         }
                     Graphics_flushBuffer(&g_sContext);
                     update = false;
-                }   
+                }
             break;
 
-            
         }
-        if (P2IN &= BIT1) {
-            //while (getButtonState()) { 
-            //    1 == 1;
-            //    
-            //}
+        if (isButtonPressed(P2IN, BIT1)) { // get the button state directly
             if (menu < 6) {
                 menu++;
                 state = EDIT;
             }
             else {
                 menu = 0;
+                timer_cnt = monthOffset + dayOffset + hourOffset + minuteOffset + secondOffset; // set the timer_cnt when we leave the edit state
                 state = DISPLAY;
             }
         }
+    }
+}//end main
 
-    }  
+void dispTime(unsigned long long time){
+    char tempStrF[3];  // Array to hold the string representation of the temperature
+    tempStrF[0] = (((int)tempF)/10) + 0x30;
+    tempStrF[1] = (((int)tempF)%10) + 0x30;
+    tempStrF[2] = '\0';
+
+    char tempStrC[3];  // Array to hold the string representation of the temperature
+    tempStrC[0] = (((int)tempC)/10) + 0x30;
+    tempStrC[1] = (((int)tempC)%10) + 0x30;
+    tempStrC[2] = '\0';
+
+    convert_seconds(time);
+    char displayDayStr[3];
+    displayDayStr[0] = (days/10) + 0x30;
+    displayDayStr[1] = (days%10) + 0x30;
+    displayDayStr[2] = '\0';
+
+    char displayTimeStr[9];
+    displayTimeStr[0] = (hours/10) + 0x30;
+    displayTimeStr[1] = (hours%10) + 0x30;
+    displayTimeStr[2] = ':';
+    displayTimeStr[3] = (minutes/10) + 0x30;
+    displayTimeStr[4] = (minutes%10) + 0x30;
+    displayTimeStr[5] = ':';
+    displayTimeStr[6] = (seconds/10) + 0x30;
+    displayTimeStr[7] = (seconds%10) + 0x30;
+    displayTimeStr[8] = '\0';
+
+    Graphics_clearDisplay(&g_sContext); // Clear the display
+
+    Graphics_drawStringCentered(&g_sContext, "THE TEMPERATURE", AUTO_STRING_LENGTH, 48, 18, TRANSPARENT_TEXT);
+    Graphics_drawStringCentered(&g_sContext, tempStrF, AUTO_STRING_LENGTH, 14, 28, TRANSPARENT_TEXT);
+    Graphics_drawStringCentered(&g_sContext, "F", AUTO_STRING_LENGTH, 24, 28, TRANSPARENT_TEXT);
+    Graphics_drawStringCentered(&g_sContext, tempStrC, AUTO_STRING_LENGTH, 54, 28, TRANSPARENT_TEXT);
+    Graphics_drawStringCentered(&g_sContext, "C", AUTO_STRING_LENGTH, 64, 28, TRANSPARENT_TEXT);
+                    //
+    Graphics_drawStringCentered(&g_sContext, "THE DATE & TIME", AUTO_STRING_LENGTH, 48, 48, TRANSPARENT_TEXT);
+    Graphics_drawStringCentered(&g_sContext, displayMonthStr          , AUTO_STRING_LENGTH, 36, 58, TRANSPARENT_TEXT);
+    Graphics_drawStringCentered(&g_sContext, displayDayStr          , AUTO_STRING_LENGTH, 56, 58, TRANSPARENT_TEXT);
+    Graphics_drawStringCentered(&g_sContext, displayTimeStr          , AUTO_STRING_LENGTH, 48, 68, TRANSPARENT_TEXT);
+    Graphics_flushBuffer(&g_sContext);
 }
-
-//end main
-
-
-
-
-
-
 
 int isButtonPressed(volatile char *button_reg, char button_mask) {
     static uint8_t last_state = 0; // Static variable to store the previous state of the button
@@ -335,9 +295,10 @@ float configAdcRegs(void){
     volatile unsigned int bits30, bits85;
     volatile float degC_per_bit;
     REFCTL0 &= ~REFMSTR; // Reset REFMSTR to hand over control of internal ref voltage
-    ADC12CTL0 = ADC12SHT0_9 | ADC12REFON | ADC12ON; // Internal ref = 1.5V
-    ADC12CTL1 = ADC12SHP; // Enable sample timer
-    ADC12MCTL0 = ADC12SREF_1 + ADC12INCH_10; // ADC i/p ch A10 = temp sense
+    ADC12CTL0 = ADC12SHT0_9 | ADC12REFON | ADC12ON | ADC12MSC; // Internal ref = 1.5V
+    ADC12CTL1 = ADC12SHP | ADC12CONSEQ_1; // Enable sample timer
+    ADC12MCTL0 = ADC12SREF_1 + ADC12INCH_10;
+    ADC12MCTL1 = ADC12SREF_0 + ADC12INCH_0 + ADC12EOS; // stop reading after this register
     __delay_cycles(100); // delay to allow Ref to settle
     ADC12CTL0 |= ADC12ENC;
 
@@ -373,7 +334,7 @@ float average_arr(float* array, int length){
     return average;
 }
 
-void convert_seconds(long total_seconds) {
+void convert_seconds(unsigned long long total_seconds) {
     // Calculate number of days
     days = (total_seconds / (24 * 3600)) + 1;
     total_seconds %= (24 * 3600);
@@ -469,22 +430,18 @@ void configureButtons(void) {
 
     // Set direction to input
     P7DIR |= (BIT0|BIT4);
-    
+
     // Enable pull resistors
     P7REN |= (BIT0|BIT4);
-    
+
     // Configure to pull up
     P7OUT |= (BIT0|BIT4);
-  
 }
 
-
-// prelab 3
 unsigned char getButtonState(void) {
     unsigned char retVal = 0; // make empty
-    
-    retVal |= (P7IN &= (BIT0)); // get button S1
 
+    retVal |= (P7IN &= (BIT0)); // get button S1
 
     return ~retVal & 0x0F;
 }
@@ -507,9 +464,7 @@ void timerDelay(long unsigned int ms) {
     }
 }
 
-
 //TIMER SETUP
-
 void runtimerA2(void) {
     TA2CTL = TASSEL_1 + MC_1 + ID_0;
     TA2CCR0 = 32768;//interupt every 1 second
@@ -524,23 +479,13 @@ void stoptimerA2(bool reset){
     }
 }
 
-// void displayTime(unsigned int inTme) {
-//     char asc_arr[6];
-//     unsigned int min;
-//     unsigned int sec;
-//     unsigned int msec;
-
-//     Graphics_drawStringCentered(&g_sContext, asc_arr, 6,51,32,OPAUE_TEXT);
-// }
-
 #pragma vector = TIMER2_A0_VECTOR//timer count increses by 1 every ms
 __interrupt void TimerA2_ISR (void) {
     update = true;
     if (tdir){
-
-        timer_cnt++;
-
-
+        if (state == DISPLAY) {
+            timer_cnt++;
+        }
         if (timer_cnt == 31536000){
             timer_cnt = 0;
         }
